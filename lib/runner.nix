@@ -26,7 +26,7 @@ let
     ${createVolumesScript pkgs.buildPackages microvmConfig.volumes}
     ${lib.optionalString (hypervisorConfig.requiresMacvtapAsFds or false) openMacvtapFds}
 
-    exec ${command}
+    exec ${pkgs.screen}/bin/screen -S microvm-${microvmConfig.hostName} ${command}
   '';
 
   shutdownScriptBin = pkgs.buildPackages.writeScriptBin "microvm-shutdown" ''

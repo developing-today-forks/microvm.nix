@@ -138,8 +138,7 @@ in {
       "-kernel" "${kernelPath}"
       "-initrd" initrdPath
 
-      "-chardev" "stdio,id=stdio,signal=off"
-      "-serial" "chardev:stdio"
+      "-serial" "unix:console.sock,server,nowait"
       "-device" "virtio-rng-${devType}"
     ] ++
     lib.optionals (microvmConfig.cpu == null) [

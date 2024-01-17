@@ -165,6 +165,7 @@ writeScriptBin "microvm" ''
     shell)
       cd "$DIR"
       ${pkgs.screen} ${pkgs.socat} UNIX-CLIENT:console.sock -,raw,echo=0
+      ;;
 
     list)
       for DIR in "$STATE_DIR"/* ; do

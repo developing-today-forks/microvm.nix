@@ -164,7 +164,7 @@ writeScriptBin "microvm" ''
 
     shell)
       cd "$DIR"
-      ${pkgs.screen} ${pkgs.socat} UNIX-CLIENT:console.sock -,raw,echo=0
+      ${pkgs.screen}/bin/screen ${pkgs.socat}/bin/socat UNIX-CLIENT:console.sock -,raw,echo=0
       ;;
 
     list)

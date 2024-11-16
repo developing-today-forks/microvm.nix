@@ -6,11 +6,19 @@
 let
   inherit (pkgs) lib;
   inherit (microvmConfig) vcpu mem balloonMem user interfaces volumes shares socket devices hugepageMem graphics storeDisk storeOnDisk kernel initrdPath;
+  inherit (microvmConfig.cloud-hypervisor) extraArgs;
 
   kernelPath = {
     x86_64-linux = "${kernel.dev}/vmlinux";
     aarch64-linux = "${kernel.out}/${pkgs.stdenv.hostPlatform.linux-kernel.target}";
-  }.${pkgs.system};
+  }.${pkgs.stdenv.system};
+
+  kernelConsole =
+    if pkgs.stdenv.system == "x86_64-linux"
+    then "earlyprintk=ttyS0 console=ttyS0"
+    else if pkgs.stdenv.system == "aarch64-linux"
+    then "console=ttyAMA0"
+    else "";
 
   # balloon
   useBallooning = balloonMem > 0;
@@ -77,6 +85,10 @@ let
     vulkan = true;
   };
 
+  # systemd>=256 hangs at stage-2 on notifying X_SYSTEMD_HOSTNAME
+  supportsNotifySocket =
+    builtins.compareVersions pkgs.systemd.version "256" < 0;
+
 in {
   inherit tapMultiQueue;
 
@@ -87,6 +99,15 @@ in {
       # stumbling over a preexisting socket
       rm -f '${socket}'
     ''}
+
+  '' + lib.optionalString supportsNotifySocket ''
+    # Ensure notify sockets are removed if cloud-hypervisor didn't exit cleanly the last time
+    rm -f notify.vsock notify.vsock_8888
+
+    # Start socat to forward systemd notify socket over vsock
+    if [ -n "$NOTIFY_SOCKET" ]; then
+      ${pkgs.socat}/bin/socat UNIX-LISTEN:notify.vsock_8888,fork UNIX-SENDTO:$NOTIFY_SOCKET &
+    fi
   '' + lib.optionalString graphics.enable ''
     rm -f ${graphics.socket}
     ${pkgs.crosvm}/bin/crosvm device gpu \
@@ -98,6 +119,8 @@ in {
       sleep .1
     done
   '';
+
+  inherit supportsNotifySocket;
 
   command =
     if user != null
@@ -114,9 +137,14 @@ in {
         "--serial" "tty"
         "--kernel" kernelPath
         "--initramfs" initrdPath
-        "--cmdline" "console=ttyS0 reboot=t panic=-1 ${toString microvmConfig.kernelParams}"
+        "--cmdline" "${kernelConsole} reboot=t panic=-1 ${toString microvmConfig.kernelParams}"
         "--seccomp" "true"
         "--memory" memOps
+      ]
+      ++
+      lib.optionals supportsNotifySocket [
+        "--platform" "oem_strings=[io.systemd.credential:vmm.notify_socket=vsock-stream:2:8888]"
+        "--vsock" "cid=3,socket=notify.vsock"
       ]
       ++
       lib.optionals graphics.enable [
@@ -168,6 +196,8 @@ in {
         pci = "path=/sys/bus/pci/devices/${path}";
         usb = throw "USB passthrough is not supported on cloud-hypervisor";
       }.${bus}) devices)
+      ++
+      extraArgs
     );
 
   canShutdown = socket != null;

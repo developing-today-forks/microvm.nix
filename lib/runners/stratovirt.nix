@@ -8,11 +8,13 @@ let
 
   inherit (microvmConfig)
     hostName
-    vcpu mem balloonMem interfaces shares socket forwardPorts devices
+    vcpu mem interfaces shares socket forwardPorts devices
     kernel initrdPath
     storeOnDisk storeDisk;
 
-  inherit (import ../. { nixpkgs-lib = pkgs.lib; }) withDriveLetters;
+  tapMultiQueue = vcpu > 1;
+
+  inherit (import ../. { inherit (pkgs) lib; }) withDriveLetters;
   volumes = withDriveLetters microvmConfig;
 
   # PCI required by vfio-pci for PCI passthrough
@@ -63,12 +65,15 @@ let
     echo '${builtins.toJSON data}' | nc -U "${socket}"
   '';
 in {
+  inherit tapMultiQueue;
+
   command = lib.escapeShellArgs (
     [
+      "${pkgs.expect}/bin/unbuffer"
       "${pkgs.stratovirt}/bin/stratovirt"
       "-name" hostName
       "-machine" machine
-      "-m" (toString (mem + balloonMem))
+      "-m" (toString mem)
       "-smp" (toString vcpu)
 
       "-kernel" "${kernel}/bzImage"
@@ -80,24 +85,19 @@ in {
       "-device" "virtio-rng-${devType 1},rng=rng,id=rng_dev"
     ] ++
     lib.optionals storeOnDisk [
-      "-drive" "id=store,format=raw,readonly=on,file=${storeDisk},if=none,aio=io_uring"
+      "-drive" "id=store,format=raw,readonly=on,file=${storeDisk},if=none,aio=io_uring,direct=false"
       "-device" "virtio-blk-${devType 2},drive=store,id=blk_store"
     ] ++
     lib.optionals (socket != null) [ "-qmp" "unix:${socket},server,nowait" ] ++
-    # lib.optionals (balloonMem > 0) [ "-device" "virtio-balloon-${devType 3}" ] ++
     builtins.concatMap ({ image, letter, ... }: [
-      "-drive" "id=vd${letter},format=raw,file=${image},aio=io_uring"
+      "-drive" "id=vd${letter},format=raw,file=${image},aio=io_uring,direct=false"
       "-device" "virtio-blk-${devType 4},drive=vd${letter},id=blk_vd${letter}"
     ]) volumes ++
     lib.optionals (shares != []) (
-      [
-        # "-object" "memory-backend-memfd,id=mem,size=${toString (mem + balloonMem)}M,share=on"
-        # "-numa" "node,memdev=mem"
-      ] ++
       builtins.concatMap ({ proto, index, socket, source, tag, ... }: {
         "virtiofs" = [
           "-chardev" "socket,id=fs${toString index},path=${socket}"
-          "-device" "vhost-user-fs-${devType (5 + index)},chardev=fs${toString index},tag=${tag}"
+          "-device" "vhost-user-fs-${devType (5 + index)},chardev=fs${toString index},tag=${tag},id=fs${toString index}"
         ];
       }.${proto}) (enumerate 0 shares)
     )
@@ -112,6 +112,7 @@ in {
             [
               (if type == "macvtap" then "tap" else "${type}")
               "id=${id}"
+              "queues=${toString (lib.min 16 vcpu)}"
             ]
             ++ lib.optionals (type == "user" && forwardPortsOptions != []) forwardPortsOptions
             ++ lib.optionals (type == "bridge") [
@@ -123,10 +124,21 @@ in {
             ++ lib.optionals (type == "macvtap") [
               "fd=${toString macvtapFds.${id}}"
             ]
+            ++ lib.optionals tapMultiQueue [
+              "queues=${toString vcpu}"
+            ]
           )
         )
         # TODO: devType (0x10 + i)
-        "-device" "virtio-net-${devType 30},id=net_${id},netdev=${id},mac=${mac}"
+        "-device" (
+          lib.concatStringsSep "," [
+            "virtio-net-${devType 30}"
+            "id=net_${id}"
+            "netdev=${id}"
+            "mac=${mac}"
+            "mq=${if tapMultiQueue then "on" else "off"}"
+          ]
+        )
       ]) interfaces
     )
     ++
@@ -140,7 +152,6 @@ in {
     }.${bus}) devices
     ++
     lib.optionals (lib.hasPrefix "q35" machine) [
-      # "-drive" "file=${pkgs.qboot}/bios.bin,if=pflash,unit=0,readonly=true"
       "-drive" "file=${pkgs.OVMF.fd}/FV/OVMF_CODE.fd,if=pflash,unit=0,readonly=true"
       "-drive" "file=${pkgs.OVMF.fd}/FV/OVMF_VARS.fd,if=pflash,unit=1,readonly=true"
     ]

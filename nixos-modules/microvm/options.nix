@@ -1,10 +1,11 @@
-{ config, options, lib, ... }:
+{ config, options, lib, pkgs, ... }:
 let
   self-lib = import ../../lib {
-    nixpkgs-lib = lib;
+    inherit lib;
   };
 
   hostName = config.networking.hostName or "$HOSTNAME";
+
 in
 {
   options.microvm = with lib; {
@@ -12,7 +13,7 @@ in
       type = types.bool;
       default = true;
       description = ''
-        Whether to enable the microvm.nix guest module.
+        Whether to enable the microvm.nix guest module at all.
       '';
     };
 
@@ -23,7 +24,9 @@ in
         What CPU to emulate, if any. If different from the host
         architecture, it will have a serious performance hit.
 
+        ::: {.note}
         Only supported with qemu.
+        :::
       '';
     };
 
@@ -57,7 +60,7 @@ in
     };
 
     kernel = mkOption {
-      description = "Kernel package to use for MicroVM runners";
+      description = "Kernel package to use for MicroVM runners. Better set `boot.kernelPackages` instead.";
       default = config.boot.kernelPackages.kernel;
       defaultText = literalExpression ''"''${config.boot.kernelPackages.kernel}"'';
       type = types.package;
@@ -162,13 +165,15 @@ in
           When using the SLiRP user networking (default), this option allows to
           forward ports to/from the host/guest.
 
-          <warning><para>
-            If the NixOS firewall on the virtual machine is enabled, you also
-            have to open the guest ports to enable the traffic between host and
-            guest.
-          </para></warning>
+          ::: {.warning}
+          If the NixOS firewall on the virtual machine is enabled, you
+          also have to open the guest ports to enable the traffic
+          between host and guest.
+          :::
 
-          <note><para>Currently QEMU supports only IPv4 forwarding.</para></note>
+          ::: {.note}
+          Currently QEMU supports only IPv4 forwarding.
+          :::
         '';
     };
     volumes = mkOption {
@@ -183,7 +188,7 @@ in
           label = mkOption {
             type = nullOr str;
             default = null;
-            description = "Label of the volume, if any. Only applicable if autoCreate is true; otherwise labeling of the volume must be done manually";
+            description = "Label of the volume, if any. Only applicable if `autoCreate` is true; otherwise labeling of the volume must be done manually";
           };
           mountPoint = mkOption {
             type = nullOr path;
@@ -198,10 +203,15 @@ in
             default = true;
             description = "Created image on host automatically before start?";
           };
+          mkfsExtraArgs = mkOption {
+            type = listOf str;
+            default = [];
+            description = "Set extra Filesystem creation parameters";
+          };
           fsType = mkOption {
             type = str;
             default = "ext4";
-            description = "File system for automatic creation and mounting";
+            description = "Filesystem for automatic creation and mounting";
           };
         };
       });
@@ -275,6 +285,11 @@ in
           source = mkOption {
             type = nonEmptyStr;
             description = "Path to shared directory tree";
+          };
+          securityModel = mkOption {
+            type = enum [ "passthrough" "none" "mapped" "mapped-file" ];
+            default = "none";
+            description = "What security model to use for the shared directory";
           };
           mountPoint = mkOption {
             type = path;
@@ -388,10 +403,42 @@ in
       '';
     };
 
+    qemu.machine = mkOption {
+      type = types.str;
+      description = ''
+        QEMU machine model, eg. `microvm`, or `q35`
+
+        Get a full list with `qemu-system-x86_64 -M help`
+
+        This has a default declared with `lib.mkDefault` because it
+        depends on ''${pkgs.system}.
+      '';
+    };
+
+    qemu.machineOpts = mkOption {
+      type = with types; nullOr (attrsOf str);
+      default = null;
+      description = "Overwrite the default machine model options.";
+    };
+
     qemu.extraArgs = mkOption {
       type = with types; listOf str;
       default = [];
       description = "Extra arguments to pass to qemu.";
+    };
+
+    qemu.serialConsole = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Whether to enable the virtual serial console on qemu.
+      '';
+    };
+
+    cloud-hypervisor.extraArgs = mkOption {
+      type = with types; listOf str;
+      default = [];
+      description = "Extra arguments to pass to cloud-hypervisor.";
     };
 
     crosvm.extraArgs = mkOption {
@@ -406,6 +453,14 @@ in
       description = "A Hypervisor's sandbox directory";
     };
 
+    prettyProcnames = mkOption {
+      type = types.bool;
+      default = true;
+      description = ''
+        Set a recognizable process name right before executing the Hyperisor.
+      '';
+    };
+
     runner = mkOption {
       description = "Generated Hypervisor runner for this NixOS";
       type = with types; attrsOf package;
@@ -418,4 +473,16 @@ in
       defaultText = literalExpression ''"config.microvm.runner.''${config.microvm.hypervisor}"'';
     };
   };
+
+  config = lib.mkMerge [ {
+    microvm.qemu.machine =
+      lib.mkIf (pkgs.system == "x86_64-linux") (
+        lib.mkDefault "microvm"
+      );
+  } {
+    microvm.qemu.machine =
+      lib.mkIf (pkgs.system == "aarch64-linux") (
+        lib.mkDefault "virt"
+      );
+  } ];
 }

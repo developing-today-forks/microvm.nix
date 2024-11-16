@@ -1,6 +1,18 @@
 # Major Changes in microvm.nix
 
-## 0.5.0 (To be released)
+## Unreleased: `main` branch
+
+* `microvm-virtiofsd@.service` now starts the multiple virtiofsd
+  instances through supervisord.
+* The `host` module allows configuration of
+  `microvm.virtiofsd.inodeFileHandles` and
+  `microvm.virtiofsd.threadPoolSize` now.
+* Add the [alioth VMM](https://github.com/google/alioth)
+* Fixes for the stratovirt VMM
+* New volume image files will be created with `truncate` instead of
+  `fallocate`, saving disk space.
+
+## 0.5.0 (2024-04-06)
 
 * **tap interfaces** are now **multi-queue** when running with more
   than one VCPU. Update your host!
@@ -9,8 +21,17 @@
   Generator** instead of KVM.
 * **SSH deployment scripts** are added as
   `config.microvm.deploy.rebuild`
-* **qemu** gets rid of the *q35* machine model entirely as the
-  *microvm* model supports PCI, USB, and ACPI by now.
+* **qemu** defaults to the *microvm* machine model now as it supports
+  PCI, USB, and ACPI by now. Set `microvm.qemu.machine = "q35"` if
+  this breaks for you.
+* The NixOS **hardened** profile can be used by falling back to
+  *squashfs*.
+* Runners execute the hypervisor with a process name of
+  `microvm@$NAME`
+* We no longer let `environment.noXlibs` default to `true`
+* **Breaking:** the `microvm` user is no longer in the `disk` group
+  for security reasons. Add `users.users.microvm.extraGroups = [
+  "disk" ]` to your config to restore the old behavior.
 
 ## 0.4.1 (2023-11-03)
 

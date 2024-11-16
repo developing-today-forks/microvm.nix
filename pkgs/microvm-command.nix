@@ -43,6 +43,11 @@ writeShellScriptBin "microvm" ''
         NAME=$OPTARG
         ;;
 
+      s)
+        ACTION=shell
+        NAME=$OPTARG
+        ;;
+
       l)
         ACTION=list
         ;;
@@ -89,6 +94,7 @@ writeShellScriptBin "microvm" ''
           -u <names>  Rebuild (update) MicroVMs
           -r <name>   Run a MicroVM in foreground
           -l          List MicroVMs
+          -s <name>   Open a MicroVM's shell
 
   Flags:
           -f <flake>  Create using another flake than $FLAKE
@@ -153,6 +159,11 @@ writeShellScriptBin "microvm" ''
     run)
       cd "$DIR"
       exec ./current/bin/microvm-run
+      ;;
+
+    shell)
+      cd "$DIR"
+      ${pkgs.screen}/bin/screen ${pkgs.socat}/bin/socat UNIX-CLIENT:console.sock -,raw,echo=0
       ;;
 
     list)

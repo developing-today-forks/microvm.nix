@@ -169,6 +169,7 @@ lib.warnIf (mem == 2048) ''
       "-kernel" "${kernelPath}"
       "-initrd" initrdPath
 
+      "-serial" "unix:console.sock,server,nowait"
       "-chardev" "stdio,id=stdio,signal=off"
       "-device" "virtio-rng-${devType}"
     ] ++

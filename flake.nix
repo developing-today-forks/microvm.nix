@@ -22,15 +22,19 @@
         "aarch64-linux"
       ];
 
+      # https://github.com/NixOS/nixpkgs/pull/296538
+      # TODO: remove entirely after NixOS 24.05
       overrideWaypipe = pkgs:
-        pkgs.waypipe.overrideAttrs (attrs: {
-          version = "unstable-2023-10-02";
+        if builtins.compareVersions pkgs.waypipe.version "0.9" >= 0
+        then pkgs.waypipe
+        else pkgs.waypipe.overrideAttrs (attrs: rec {
+          version = "0.9.0";
           src = pkgs.fetchFromGitLab {
             domain = "gitlab.freedesktop.org";
             owner = "mstoeckl";
             repo = "waypipe";
-            rev = "ca4809435e781dfc6bd3006fde605860c8dcf179";
-            hash = "sha256-tSLPlf7fVq8vwbr7fHotqM/sBSXYMDM1V5yth5bhi38=";
+            rev = "v${version}";
+            hash = "sha256-zk5IzZiFff9EeJn24/QmE1ybcBkxpaz6Owp77CfCwV0=";
           };
         });
     in
@@ -65,16 +69,14 @@
                   TAP_INTERFACE=null
                 fi
 
-                RUNNER=$(${pkgs.nix}/bin/nix build \
+                ${pkgs.nix}/bin/nix run \
                   -f ${./examples/graphics.nix} \
                   config.microvm.declaredRunner \
                   --arg self 'builtins.getFlake "${self}"' \
                   --arg system '"${system}"' \
                   --arg nixpkgs 'builtins.getFlake "${nixpkgs}"' \
                   --arg packages "\"$*\"" \
-                  --arg tapInterface "$TAP_INTERFACE" \
-                  --no-link --print-out-paths)
-                exec $RUNNER/bin/microvm-run
+                  --arg tapInterface "$TAP_INTERFACE"
               '');
             };
             # Run this on your host to accept Wayland connections
@@ -89,12 +91,15 @@
 
         packages =
           let
-            pkgs = nixpkgs.legacyPackages.${system};
+            pkgs = import nixpkgs {
+              inherit system;
+              overlays = [ self.overlay ];
+            };
           in {
             build-microvm = pkgs.callPackage ./pkgs/build-microvm.nix { inherit self; };
             doc = pkgs.callPackage ./pkgs/doc.nix { inherit nixpkgs; };
             microvm = import ./pkgs/microvm-command.nix {
-              inherit pkgs;
+              pkgs = import nixpkgs { inherit system; };
             };
             # all compilation-heavy packages that shall be prebuilt for a binary cache
             prebuilt = pkgs.buildEnv {
@@ -106,6 +111,7 @@
                 crosvm-example
                 kvmtool-example
                 stratovirt-example
+                # alioth-example
                 virtiofsd
               ];
               pathsToLink = [ "/" ];
@@ -113,6 +119,7 @@
               ignoreCollisions = true;
             };
             waypipe = overrideWaypipe pkgs;
+            alioth = pkgs.callPackage ./pkgs/alioth.nix {};
           } //
           # wrap self.nixosConfigurations in executable packages
           builtins.foldl' (result: systemName:
@@ -138,16 +145,20 @@
           })
         ) (import ./checks { inherit self nixpkgs system; });
       }) // {
-        lib = import ./lib { nixpkgs-lib = nixpkgs.lib; };
+        lib = import ./lib { inherit (nixpkgs) lib; };
 
         overlay = final: prev: {
           cloud-hypervisor-graphics = prev.callPackage (spectrum + "/pkgs/cloud-hypervisor") {};
           waypipe = overrideWaypipe prev;
+          alioth = prev.callPackage ./pkgs/alioth.nix {};
         };
+        overlays.default = self.overlay;
 
         nixosModules = {
           microvm = import ./nixos-modules/microvm;
-          host = import ./nixos-modules/host.nix;
+          host = import ./nixos-modules/host;
+          # Just the generic microvm options
+          microvm-options = import ./nixos-modules/microvm/options.nix;
         };
 
         defaultTemplate = self.templates.microvm;
@@ -173,11 +184,9 @@
                     system.stateVersion = config.system.nixos.version;
 
                     networking.hostName = "${hypervisor}-microvm";
-                    users.users.root.password = "";
-                    services.getty.helpLine = ''
-                      Log in as "root" with an empty password.
-                    '';
+                    services.getty.autologinUser = "root";
 
+                    nixpkgs.overlays = [ self.overlay ];
                     microvm.hypervisor = hypervisor;
                     # share the host's /nix/store if the hypervisor can do 9p
                     microvm.shares = lib.optional (builtins.elem hypervisor hypervisorsWith9p) {
@@ -203,16 +212,8 @@
                     networking.firewall.allowedTCPPorts = lib.optional (hypervisor == "qemu") 22;
                     services.openssh = lib.optionalAttrs (hypervisor == "qemu") {
                       enable = true;
-                    } // (
-                      if builtins.compareVersions lib.version "22.11" <= 0
-                      then {
-                        # NixOS<23.05 option
-                        permitRootLogin = "yes";
-                      } else {
-                        # NixOS>=23.05 setting
-                        settings.PermitRootLogin = "yes";
-                      }
-                    );
+                      settings.PermitRootLogin = "yes";
+                    };
                   })
                   config
                 ];
@@ -238,16 +239,8 @@
                       networking.firewall.allowedTCPPorts = [ 22 ];
                       services.openssh = {
                         enable = true;
-                      } // (
-                        if builtins.compareVersions lib.version "22.11" <= 0
-                        then {
-                          # NixOS<23.05 option
-                          permitRootLogin = "yes";
-                        } else {
-                          # NixOS>=23.05 setting
-                          settings.PermitRootLogin = "yes";
-                        }
-                      );
+                        settings.PermitRootLogin = "yes";
+                      };
                     };
                   };
                 };

@@ -1,7 +1,7 @@
 { config, lib, pkgs, ... }:
 
 let
-  inherit (config.networking) hostName;
+  hostName = config.networking.hostName or "$HOSTNAME";
   inherit (config.system.build) toplevel;
   inherit (config.microvm) declaredRunner;
   inherit (config) nix;
@@ -94,15 +94,28 @@ in
 
   # Implementations
   config.microvm.deploy = {
-    installOnHost = pkgs.writeScriptBin "microvm-install-on-host" ''
+    installOnHost = pkgs.writeShellScriptBin "microvm-install-on-host" ''
       set -eou pipefail
+
+      USAGE="Usage: $0 root@<host> [--use-remote-sudo]"
 
       HOST="$1"
       if [[ -z "$HOST" ]]; then
-        echo "Usage: $0 root@<host>"
+        echo $USAGE
         exit 1
       fi
       shift
+      SSH_CMD="bash"
+      if [ $# -gt 0 ]; then
+        if [ "$1" == "--use-remote-sudo" ]; then
+          SSH_CMD="sudo bash"
+          shift
+        else
+          echo "$USAGE"
+          exit 1
+        fi
+      fi
+
 
       echo "Copying derivations to $HOST"
       nix copy --no-check-sigs --to "ssh-ng://$HOST" \
@@ -110,10 +123,11 @@ in
         "${paths.closureInfoDrv}^out" \
         "${paths.runnerDrv}^out"
 
-      ssh "$HOST" -- bash -e <<__SSH__
+      ssh "$HOST" -- $SSH_CMD -e <<__SSH__
       set -eou pipefail
 
       echo "Initializing MicroVM ${hostName} if necessary"
+      mkdir -p /nix/var/nix/gcroots/microvm
       mkdir -p /var/lib/microvms/${hostName}
       cd /var/lib/microvms/${hostName}
       chown microvm:kvm .
@@ -136,13 +150,19 @@ in
       if [[ $(realpath ./current) != $(realpath ./new) ]]; then
         echo "Installing MicroVM ${hostName}"
         rm -f old
-        mv current old
+        if [ -e current ]; then
+          mv current old
+        fi
         mv new current
 
-        echo "Success. Diff:"
-        nix --extra-experimental-features nix-command \
-          store diff-closures ./old ./current \
-          || true
+        if [ -e old ]; then
+          echo "Success. Diff:"
+          nix --extra-experimental-features nix-command \
+            store diff-closures ./old ./current \
+            || true
+        else
+          echo "Success."
+        fi
       else
         echo "MicroVM ${hostName} is already installed"
       fi
@@ -150,17 +170,29 @@ in
     '';
 
     sshSwitch = lib.mkIf canSwitchViaSsh (
-      pkgs.writeScriptBin "microvm-switch" ''
+      pkgs.writeShellScriptBin "microvm-switch" ''
         set -eou pipefail
+
+        USAGE="Usage: $0 root@<target> [--use-remote-sudo]"
 
         TARGET="$1"
         if [[ -z "$TARGET" ]]; then
-          echo "Usage: $0 root@<target>"
+          echo "$USAGE"
           exit 1
         fi
         shift
+        SSH_CMD="bash"
+        if [ $# -gt 0 ]; then
+          if [ "$1" == "--use-remote-sudo" ]; then
+            SSH_CMD="sudo bash"
+            shift
+          else
+            echo "$USAGE"
+            exit 1
+          fi
+        fi
 
-        ssh "$TARGET" bash -e <<__SSH__
+        ssh "$TARGET" $SSH_CMD -e <<__SSH__
         set -eou pipefail
 
         hostname=\$(cat /etc/hostname)
@@ -179,21 +211,28 @@ in
       ''
     );
 
-    rebuild = with config.microvm.deploy; pkgs.writeScriptBin "microvm-rebuild" ''
+    rebuild = with config.microvm.deploy; pkgs.writeShellScriptBin "microvm-rebuild" ''
       set -eou pipefail
 
       HOST="$1"
       shift
       TARGET="$1"
       shift
-      if [[ -z "$HOST" || -z "$TARGET" ]]; then
-        echo "Usage: $0 root@<host> root@<target> switch"
+      OPTS="$@"
+      if [ $# -gt 0 ]; then
+        if [ "$1" == "--use-remote-sudo" ]; then
+          OPTS="$1"
+          shift
+        fi
+      fi
+      if [[ -z "$HOST" || -z "$TARGET" || $# -gt 0 ]]; then
+        echo "Usage: $0 root@<host> root@<target> [--use-remote-sudo] switch"
         exit 1
       fi
 
-      ${lib.getExe installOnHost} "$HOST"
+      ${lib.getExe installOnHost} "$HOST" $OPTS
       ${if canSwitchViaSsh
-        then ''${lib.getExe sshSwitch} "$TARGET"''
+        then ''${lib.getExe sshSwitch} "$TARGET" $OPTS''
         else ''ssh "$HOST" -- systemctl restart "microvm@${hostName}.service"''
        }
     '';

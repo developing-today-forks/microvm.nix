@@ -4,9 +4,9 @@
 }:
 
 let
-  inherit (pkgs) lib writeScriptBin;
+  inherit (pkgs) lib;
 
-  inherit (import ./. { nixpkgs-lib = lib; }) createVolumesScript makeMacvtap;
+  inherit (import ./. { inherit lib; }) createVolumesScript makeMacvtap;
   inherit (makeMacvtap {
     inherit microvmConfig hypervisorConfig;
   }) openMacvtapFds macvtapFds;
@@ -16,27 +16,27 @@ let
   };
 
   inherit (hypervisorConfig) command canShutdown shutdownCommand;
+  supportsNotifySocket = hypervisorConfig.supportsNotifySocket or false;
   preStart = hypervisorConfig.preStart or microvmConfig.preStart;
   tapMultiQueue = hypervisorConfig.tapMultiQueue or false;
 
-  runScriptBin = pkgs.buildPackages.writeScriptBin "microvm-run" ''
-    #! ${pkgs.buildPackages.runtimeShell} -e
+  execArg = lib.optionalString microvmConfig.prettyProcnames
+    ''-a "microvm@${microvmConfig.hostName}"'';
 
+  runScriptBin = pkgs.writeShellScriptBin "microvm-run" ''
     ${preStart}
     ${createVolumesScript pkgs.buildPackages microvmConfig.volumes}
     ${lib.optionalString (hypervisorConfig.requiresMacvtapAsFds or false) openMacvtapFds}
 
-    exec ${command}
+    exec ${execArg} ${command}
   '';
 
-  shutdownScriptBin = pkgs.buildPackages.writeScriptBin "microvm-shutdown" ''
-    #! ${pkgs.runtimeShell} -e
-
+  shutdownScriptBin = pkgs.writeShellScriptBin "microvm-shutdown" ''
     ${shutdownCommand}
   '';
 
-  balloonScriptBin = pkgs.buildPackages.writeScriptBin "microvm-balloon" ''
-    #! ${pkgs.runtimeShell} -e
+  balloonScriptBin = pkgs.writeShellScriptBin "microvm-balloon" ''
+    set -e
 
     if [ -z "$1" ]; then
       echo "Usage: $0 <balloon-size-mb>"
@@ -53,7 +53,7 @@ pkgs.buildPackages.runCommand "microvm-${microvmConfig.hypervisor}-${microvmConf
   # for `nix run`
   meta.mainProgram = "microvm-run";
   passthru = {
-    inherit canShutdown;
+    inherit canShutdown supportsNotifySocket;
     inherit (microvmConfig) hypervisor;
   };
 } ''

@@ -16,17 +16,16 @@ in
 {
   options.microvm.optimize = {
     enable = lib.mkOption {
-      description = lib.mdDoc ''
-        Enables some optimizations to closure size and startup time:
-          - disables X libraries for non-graphical VMs
+      description = ''
+        Enables some optimizations by default to closure size and startup time:
           - defaults documentation to off
           - defaults to using systemd in initrd
-          - builds qemu without graphics or sound for non-graphical qemu VMs
+          - use systemd-networkd
+          - disables systemd-network-wait-online
+          - disables NixOS system switching if the host store is not mounted
 
         This takes a few hundred MB off the closure size, including qemu,
-        allowing for putting microvms inside Docker containers.
-
-        May cause more build time by e.g. rebuilding qemu.
+        allowing for putting MicroVMs inside Docker containers.
       '';
 
       type = lib.types.bool;
@@ -35,9 +34,6 @@ in
   };
 
   config = lib.mkIf (cfg.guest.enable && cfg.optimize.enable) {
-    # Avoids X deps in closure due to dbus dependencies
-    environment.noXlibs = lib.mkIf (!cfg.graphics.enable) (lib.mkDefault true);
-
     # The docs are pretty chonky
     documentation.enable = lib.mkDefault false;
 
@@ -64,7 +60,7 @@ in
     # we cannot use systemd-networkd-wait-online.
     systemd.network.wait-online.enable = lib.mkDefault false;
 
-    # Exclude switch-to-confguration.pl from toplevel.
+    # Exclude switch-to-configuration.pl from toplevel.
     system = lib.optionalAttrs (options.system ? switch && !canSwitchViaSsh) {
       switch.enable = lib.mkDefault false;
     };

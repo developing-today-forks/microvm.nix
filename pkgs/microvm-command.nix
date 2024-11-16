@@ -14,8 +14,7 @@ let
   };
   colored = color: text: "${colors.${color}}${text}${colors.normal}";
 in
-writeScriptBin "microvm" ''
-  #! ${pkgs.runtimeShell}
+writeShellScriptBin "microvm" ''
   set -e
 
   PATH=${lib.makeBinPath [
@@ -179,7 +178,7 @@ writeScriptBin "microvm" ''
             NEW_SYSTEM=$(readlink "$DIR/toplevel")
           else
             FLAKE=$(cat "$DIR/flake")
-            NEW_SYSTEM=$(nix --option narinfo-cache-negative-ttl 10 eval --raw "$FLAKE#nixosConfigurations.$NAME.config.system.build.toplevel")
+            NEW_SYSTEM=$(nix --option narinfo-cache-negative-ttl 10 eval --raw "$FLAKE#nixosConfigurations.$NAME.config.system.build.toplevel" || echo error)
           fi
           NEW=''${NEW_SYSTEM#*-}
 

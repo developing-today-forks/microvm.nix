@@ -47,6 +47,11 @@ let
       modules = [ {
         microvm.hypervisor = "kvmtool";
       } ];
+    } {
+      id = "alioth";
+      modules = [ {
+        microvm.hypervisor = "alioth";
+      } ];
     } ]
     # ro-store
     [ {
@@ -99,6 +104,16 @@ let
       modules = [ {
         boot.initrd.systemd.enable = true;
       } ];
+    } ]
+    # hardened profile
+    [ {
+      # no
+      id = null;
+    } {
+      id = "hardened";
+      modules = [ ({ modulesPath, ... }: {
+        imports = [ "${modulesPath}/profiles/hardened.nix" ];
+      }) ];
     } ]
   ];
 

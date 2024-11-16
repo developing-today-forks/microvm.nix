@@ -8,7 +8,7 @@ let
   kernelAtLeast = lib.versionAtLeast config.boot.kernelPackages.kernel.version;
 
   erofsFlags = builtins.concatStringsSep " " (
-    [ "-zlz4hc" ]
+    [ "-zlz4hc" "--force-uid=0" "--force-gid=0" ]
     # ++
     # lib.optional (kernelAtLeast "5.13") "-C1048576"
     ++
@@ -19,12 +19,14 @@ let
       # "-Ededupe"
     ]
   );
+
+  writeClosure = pkgs.writeClosure or pkgs.writeReferencesToFile;
+
 in
 {
   options.microvm = with lib; {
     storeDiskType = mkOption {
       type = types.enum [ "squashfs" "erofs" ];
-      default = "erofs";
       description = ''
         Boot disk file system type: squashfs is smaller, erofs is supposed to be faster.
       '';
@@ -40,6 +42,16 @@ in
 
   config = lib.mkMerge [
     (lib.mkIf (config.microvm.guest.enable && config.microvm.storeOnDisk) {
+      # nixos/modules/profiles/hardened.nix forbids erofs.
+      # HACK: Other NixOS modules populate
+      # config.boot.blacklistedKernelModules depending on the boot
+      # filesystems, so checking on that directly would result in an
+      # infinite recursion.
+      microvm.storeDiskType = lib.mkDefault (
+        if config.security.virtualisation.flushL1DataCache == "always"
+        then "squashfs"
+        else "erofs"
+      );
       boot.initrd.availableKernelModules = [
         config.microvm.storeDiskType
       ];
@@ -56,7 +68,7 @@ in
         echo Copying a /nix/store
         mkdir store
         for d in $(sort -u ${
-          lib.concatMapStringsSep " " pkgs.writeReferencesToFile (
+          lib.concatMapStringsSep " " writeClosure (
             lib.optionals config.microvm.storeOnDisk (
               [ config.system.build.toplevel ]
               ++

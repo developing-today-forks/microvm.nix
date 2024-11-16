@@ -11,7 +11,7 @@ let
       "--enable-libusb"
     ];
     buildInputs = oa.buildInputs ++ (with pkgs; [
-      libusb
+      libusb1
     ]);
   });
 
@@ -39,9 +39,9 @@ let
     pkgs.qemu_kvm else pkgs.buildPackages.qemu_full);
 
   inherit (microvmConfig) hostName cpu vcpu mem balloonMem user interfaces shares socket forwardPorts devices vsock graphics storeOnDisk kernel initrdPath storeDisk;
-  inherit (microvmConfig.qemu) extraArgs;
+  inherit (microvmConfig.qemu) machine extraArgs serialConsole;
 
-  inherit (import ../. { nixpkgs-lib = pkgs.lib; }) withDriveLetters;
+  inherit (import ../. { inherit (pkgs) lib; }) withDriveLetters;
 
   volumes = withDriveLetters microvmConfig;
 
@@ -57,37 +57,51 @@ let
       if microvmConfig.cpu != null
       then microvmConfig.cpu
       else if system == "x86_64-linux"
-      then "host,+x2apic"
+      # qemu crashes when sgx is used on microvm machines: https://gitlab.com/qemu-project/qemu/-/issues/2142
+      then "host,+x2apic,-sgx"
       else "host"
     ) ];
 
   accel =
     if microvmConfig.cpu == null
-    then "accel=kvm:tcg"
-    else "accel=tcg";
+    then "kvm:tcg"
+    else "tcg";
 
   # PCI required by vfio-pci for PCI passthrough
   pciInDevices = lib.any ({ bus, ... }: bus == "pci") devices;
 
   requirePci =
     graphics.enable ||
+    (! lib.hasPrefix "microvm" machine) ||
     shares != [] ||
     pciInDevices;
 
-  machine = {
-    x86_64-linux = builtins.concatStringsSep "," [
-      "microvm"
-      accel
-      "mem-merge=on"
-      "pit=off"
-      "pic=off"
-      "mem-merge=on"
-      "acpi=on"
-      "pcie=${if requirePci then "on" else "off"}"
-      "usb=${if requireUsb then "on" else "off"}"
-    ];
-    aarch64-linux = "virt,gic-version=max,${accel}";
-  }.${system};
+  machineOpts =
+    if microvmConfig.qemu.machineOpts != null
+    then microvmConfig.qemu.machineOpts
+    else {
+      x86_64-linux = {
+        inherit accel;
+        mem-merge = "on";
+        acpi = "on";
+      } // lib.optionalAttrs (machine == "microvm") {
+        pit = "off";
+        pic = "off";
+        pcie = if requirePci then "on" else "off";
+        usb = if requireUsb then "on" else "off";
+      };
+      aarch64-linux = {
+        inherit accel;
+        gic-version = "max";
+      };
+    }.${system};
+
+  machineConfig = builtins.concatStringsSep "," (
+    [ machine ] ++
+    map (name:
+      "${name}=${machineOpts.${name}}"
+    ) (builtins.attrNames machineOpts)
+  );
 
   devType =
     if requirePci
@@ -121,14 +135,31 @@ let
   writeQmp = data: ''
     echo '${builtins.toJSON data}'
   '';
-in {
+
+  kernelConsole =
+    if microvmConfig.qemu.serialConsole == false
+    then ""
+    else if system == "x86_64-linux"
+    then "earlyprintk=ttyS0 console=ttyS0"
+    else if system == "aarch64-linux"
+    then "console=ttyAMA0"
+    else "";
+
+
+in
+lib.warnIf (mem == 2048) ''
+  QEMU hangs if memory is exactly 2GB
+
+  <https://github.com/astro/microvm.nix/issues/171>
+''
+{
   inherit tapMultiQueue;
 
   command = lib.escapeShellArgs (
     [
       "${qemu}/bin/qemu-system-${arch}"
       "-name" hostName
-      "-M" machine
+      "-M" machineConfig
       "-m" (toString (mem + balloonMem))
       "-smp" (toString vcpu)
       "-nodefaults" "-no-user-config"
@@ -139,7 +170,11 @@ in {
       "-initrd" initrdPath
 
       "-serial" "unix:console.sock,server,nowait"
+      "-chardev" "stdio,id=stdio,signal=off"
       "-device" "virtio-rng-${devType}"
+    ] ++
+    lib.optionals serialConsole [
+      "-serial" "chardev:stdio"
     ] ++
     lib.optionals (microvmConfig.cpu == null) [
       "-enable-kvm"
@@ -148,10 +183,10 @@ in {
     lib.optionals (system == "x86_64-linux") [
       "-device" "i8042"
 
-      "-append" "earlyprintk=ttyS0 console=ttyS0 reboot=t panic=-1 ${toString microvmConfig.kernelParams}"
+      "-append" "${kernelConsole} reboot=t panic=-1 ${toString microvmConfig.kernelParams}"
     ] ++
     lib.optionals (system == "aarch64-linux") [
-      "-append" "console=ttyAMA0 reboot=t panic=-1 ${toString microvmConfig.kernelParams}"
+      "-append" "${kernelConsole} reboot=t panic=-1 ${toString microvmConfig.kernelParams}"
     ] ++
     lib.optionals storeOnDisk [
       "-drive" "id=store,format=raw,read-only=on,file=${storeDisk},if=none,aio=io_uring"
@@ -182,13 +217,13 @@ in {
         "-object" "memory-backend-memfd,id=mem,size=${toString (mem + balloonMem)}M,share=on"
         "-numa" "node,memdev=mem"
       ] ++
-      builtins.concatMap ({ proto, index, socket, source, tag, ... }: {
+      builtins.concatMap ({ proto, index, socket, source, tag, securityModel, ... }: {
         "virtiofs" = [
           "-chardev" "socket,id=fs${toString index},path=${socket}"
           "-device" "vhost-user-fs-${devType},chardev=fs${toString index},tag=${tag}"
         ];
         "9p" = [
-          "-fsdev" "local,id=fs${toString index},path=${source},security_model=none"
+          "-fsdev" "local,id=fs${toString index},path=${source},security_model=${securityModel}"
           "-device" "virtio-9p-${devType},fsdev=fs${toString index},mount_tag=${tag}"
         ];
       }.${proto}) (enumerate 0 shares)
@@ -236,14 +271,13 @@ in {
             (microvmConfig.cpu == null && system != "x86_64-linux")
           ) ",romfile="
         }${
-          lib.optionalString tapMultiQueue ",mq=on,vectors=${toString (2 * vcpu + 2)}"
+          lib.optionalString (tapMultiQueue && requirePci) ",mq=on,vectors=${toString (2 * vcpu + 2)}"
         }"
       ]) interfaces
     )
     ++
     lib.optionals requireUsb [
-      "-usb"
-      "-device" "usb-ehci"
+      "-device" "qemu-xhci"
     ]
     ++
     builtins.concatMap ({ bus, path, ... }: {
